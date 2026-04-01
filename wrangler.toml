@@ -1,0 +1,7 @@
+name = "agentproxy"
+main = "src/index.ts"
+compatibility_date = "2026-04-01"
+
+[vars]
+ROUTE_BASE_PATH = ""
+SELF_HOSTNAMES = ""

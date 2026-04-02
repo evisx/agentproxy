@@ -1,9 +1,11 @@
 # agentproxy
 
-一个基于 TypeScript 的 Cloudflare Workers 透明代理实现，只支持通过路径指定上游目标：
+一个基于 TypeScript 的 Cloudflare Workers 内部 relay 代理实现，只接受带共享 secret 的内部路径并把请求透明转发到目标上游：
 
-- `/proxy/<site>?query` -> `http://<site>?query`
-- `/proxyssl/<site>?query` -> `https://<site>?query`
+- `/relay/<DISPATCH_SECRET>/proxy/<site>/<upstream-path...>?query` -> `http://<site>/<upstream-path...>?query`
+- `/relay/<DISPATCH_SECRET>/proxyssl/<site>/<upstream-path...>?query` -> `https://<site>/<upstream-path...>?query`
+
+旧的公开 `/proxy`、`/proxyssl` 入口已关闭，无论是否带额外 path 都会统一返回 `404`。
 
 ## 部署
 
@@ -27,40 +29,41 @@ npm run dev
 
 ## 路由行为
 
-### HTTP 上游
+### HTTP relay
 
 请求：
 
 ```text
-GET /proxy/www.google.com?q=workers
+GET /relay/<DISPATCH_SECRET>/proxy/www.google.com/search?q=workers
 ```
 
 转发到：
 
 ```text
-http://www.google.com/?q=workers
+http://www.google.com/search?q=workers
 ```
 
-### HTTPS 上游
+### HTTPS relay
 
 请求：
 
 ```text
-GET /proxyssl/github.com?tab=actions
+GET /relay/<DISPATCH_SECRET>/proxyssl/github.com/repos/cloudflare/workers?tab=actions
 ```
 
 转发到：
 
 ```text
-https://github.com/?tab=actions
+https://github.com/repos/cloudflare/workers?tab=actions
 ```
 
 ### 路由约束
 
-- 第二段路径必须是上游 `authority`，即 `host` 或 `host:port`
-- `/proxy`、`/proxyssl` 这类缺少 `authority` 的请求会返回 `400`
-- `/proxy/example.com/extra/path` 这类额外 path 段会返回 `400`
-- Bearer header 只会被透传，不会参与上游解析
+- 只有 `/relay/<DISPATCH_SECRET>/proxy...` 与 `/relay/<DISPATCH_SECRET>/proxyssl...` 会进入代理主线
+- `DISPATCH_SECRET` 不匹配时统一返回 `404`，不会尝试任何上游请求
+- relay 路径中的 `<site>` 必须是上游 `authority`，即 `host` 或 `host:port`
+- `<site>` 后面的额外 path 会按原样拼回目标上游 URL
+- Bearer / Authorization header 只会被透传，不会参与上游解析
 
 ## 运行时配置
 
@@ -68,10 +71,13 @@ https://github.com/?tab=actions
 
 - `ROUTE_BASE_PATH`
   默认值：空字符串
-  用途：给代理路由增加公共前缀，例如 `/edge/proxyssl/example.com`
+  用途：给 relay 路由增加公共前缀，例如 `/edge/relay/<DISPATCH_SECRET>/proxyssl/example.com`
 - `SELF_HOSTNAMES`
   默认值：空字符串
   用途：逗号分隔的自代理主机名或 self-origin，用于阻断明显的循环代理
+- `DISPATCH_SECRET`
+  默认值：空字符串
+  用途：只允许持有共享 secret 的 `agentdispatch` 访问内部 relay 路径；为空时所有 relay 请求都会返回 `404`
 
 即使 `SELF_HOSTNAMES` 为空，Worker 仍会自动阻止代理回当前请求自身的 `hostname`/`host`。
 
@@ -101,6 +107,12 @@ https://github.com/?tab=actions
 
 为了保证代理语义，Worker 会主动移除明显不应继续转发的 hop-by-hop 头部，例如 `Connection`、`Transfer-Encoding`、`Host`。
 
+## 对外暴露边界
+
+- 这个 Worker 不再是应用直接访问的公网入口
+- 应用流量应先进入本地或安全内网里的 `agentdispatch`
+- 直接访问 `agentproxy` 的旧 `/proxy`、`/proxyssl` 路径现在是破坏性变更，会统一得到 `404`
+
 ## 安全边界与非目标范围
 
 这个实现刻意不做以下能力：
@@ -119,7 +131,8 @@ https://github.com/?tab=actions
 
 ## 已知限制
 
-- 当前设计只支持 `/proxy/<authority>` 和 `/proxyssl/<authority>` 两种根路径映射，不接受额外上游 path 段
+- relay secret 位于 URL path 中，部署时应避免在日志与监控里记录完整 relay URL
+- 当前实现不会自动重试、故障切换或健康检查
 - 运行时可能接管部分目标相关 header，因此“透明”是最小变更而不是字节级绝对一致
 - `Set-Cookie` 是否最终被浏览器接受，仍取决于上游域名、`Secure`、`SameSite` 等浏览器规则
-- 该项目默认不做 allowlist/denylist 和访问控制，若需要收口开放代理风险，应在部署层单独增加保护
+- 该项目默认不做 allowlist/denylist 和额外访问控制，若需要进一步收口，应在部署层单独增加保护

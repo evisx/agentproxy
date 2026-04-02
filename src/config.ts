@@ -1,11 +1,13 @@
 export interface ProxyEnv {
   ROUTE_BASE_PATH?: string
   SELF_HOSTNAMES?: string
+  DISPATCH_SECRET?: string
 }
 
 export interface RuntimeConfig {
   routeBasePath: string
   selfTargets: Set<string>
+  dispatchSecret: string
 }
 
 function normalizeBasePath(value?: string): string {
@@ -38,6 +40,10 @@ function normalizeSelfTarget(value: string): string[] {
   return [trimmed]
 }
 
+function normalizeDispatchSecret(value?: string): string {
+  return value?.trim() ?? ''
+}
+
 export function getRuntimeConfig(env: ProxyEnv, requestUrl: URL): RuntimeConfig {
   const selfTargets = new Set<string>([
     requestUrl.hostname.toLowerCase(),
@@ -53,5 +59,6 @@ export function getRuntimeConfig(env: ProxyEnv, requestUrl: URL): RuntimeConfig 
   return {
     routeBasePath: normalizeBasePath(env.ROUTE_BASE_PATH),
     selfTargets,
+    dispatchSecret: normalizeDispatchSecret(env.DISPATCH_SECRET),
   }
 }

@@ -35,6 +35,10 @@ function getProxyProtocol(segment: string): UpstreamProtocol {
   throw new ProxyError(404, 'NOT_PROXY_ROUTE', '未匹配到代理路由')
 }
 
+function isPublicProxyRoute(segment: string): boolean {
+  return segment === 'proxy' || segment === 'proxyssl'
+}
+
 function decodeAuthority(value: string): string {
   try {
     return decodeURIComponent(value)
@@ -86,39 +90,63 @@ function validateAuthority(
   return upstreamUrl
 }
 
-export function resolveUpstreamUrl(
-  requestUrl: URL,
-  config: RuntimeConfig,
-): ResolvedUpstream {
-  const proxiedPath = stripBasePath(requestUrl.pathname, config.routeBasePath)
-  const segments = proxiedPath.split('/').filter(Boolean)
-  const [prefix, authoritySegment] = segments
+interface RelayRoute {
+  protocol: UpstreamProtocol
+  authoritySegment: string
+  upstreamPathname: string
+}
 
-  if (segments.length === 0) {
+function parseRelayRoute(pathname: string, dispatchSecret: string): RelayRoute {
+  const segments = pathname.split('/').filter(Boolean)
+  const [entrypoint, relaySecret, relayPrefix, authoritySegment] = segments
+
+  if (!entrypoint) {
     throw new ProxyError(404, 'NOT_PROXY_ROUTE', '未匹配到代理路由')
   }
 
-  if (!prefix) {
+  if (isPublicProxyRoute(entrypoint)) {
     throw new ProxyError(404, 'NOT_PROXY_ROUTE', '未匹配到代理路由')
   }
 
-  const protocol = getProxyProtocol(prefix)
-
-  if (segments.length === 1) {
-    throw new ProxyError(400, 'MISSING_AUTHORITY', '缺少上游 authority')
+  if (entrypoint !== 'relay') {
+    throw new ProxyError(404, 'NOT_PROXY_ROUTE', '未匹配到代理路由')
   }
 
-  if (segments.length > 2) {
-    throw new ProxyError(400, 'INVALID_PROXY_ROUTE', '代理路径不允许额外 path 段')
+  if (!dispatchSecret || relaySecret !== dispatchSecret) {
+    throw new ProxyError(404, 'NOT_PROXY_ROUTE', '未匹配到代理路由')
   }
+
+  if (!relayPrefix) {
+    throw new ProxyError(404, 'NOT_PROXY_ROUTE', '未匹配到代理路由')
+  }
+
+  const protocol = getProxyProtocol(relayPrefix)
 
   if (!authoritySegment) {
     throw new ProxyError(400, 'MISSING_AUTHORITY', '缺少上游 authority')
   }
 
+  return {
+    protocol,
+    authoritySegment,
+    upstreamPathname:
+      segments.length > 4 ? `/${segments.slice(4).join('/')}` : '/',
+  }
+}
+
+export function resolveUpstreamUrl(
+  requestUrl: URL,
+  config: RuntimeConfig,
+): ResolvedUpstream {
+  const proxiedPath = stripBasePath(requestUrl.pathname, config.routeBasePath)
+  const { protocol, authoritySegment, upstreamPathname } = parseRelayRoute(
+    proxiedPath,
+    config.dispatchSecret,
+  )
   const authority = decodeAuthority(authoritySegment)
   const upstreamUrl = validateAuthority(authority, protocol, config.selfTargets)
 
+  upstreamUrl.pathname = upstreamPathname
   upstreamUrl.search = requestUrl.search
 
   return {
